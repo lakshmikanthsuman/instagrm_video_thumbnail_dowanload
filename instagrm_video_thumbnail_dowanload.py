@@ -1,37 +1,34 @@
+import pandas as pd
 import csv
 import os
 import requests
 import re
+from transformers import pipeline
 from instaloader import Instaloader, Post
+
+# Initialize Hugging Face summarizer
+summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
+
+# Initialize Instaloader for Instagram scraping
+L = Instaloader()
+
+# Functions
+
+def rewrite_caption(caption):
+    """Shorten the Instagram caption using Hugging Face summarization model."""
+    print(f"Summarizing caption: {caption}")
+    summary = summarizer(caption, max_length=100, min_length=30, do_sample=False)
+    print(f"Shortened caption: {summary[0]['summary_text']}")
+    return summary[0]['summary_text']
+
+def extract_hashtags(caption):
+    """Extract top 3 hashtags from the caption."""
+    hashtags = re.findall(r"#\w+", caption)
+    return " ".join(hashtags[:3]) if hashtags else ""
 
 def sanitize_filename(name):
     """Convert text to lowercase and replace spaces with underscores"""
     return "_".join(name.lower().split()[:3])
-
-def download_instagram_post(post_url, save_video_folder, save_thumbnail_folder):
-    loader = Instaloader()
-    shortcode = post_url.rstrip('/').split('/')[-1]  # Extract shortcode from URL
-    
-    try:
-        post = Post.from_shortcode(loader.context, shortcode)
-        caption_text = post.caption or "default_name"
-        filename = sanitize_filename(caption_text)
-        
-        # Download video if available
-        if post.is_video:
-            video_url = post.video_url
-            video_path = os.path.join(save_video_folder, f"{filename}.mp4")
-            download_file(video_url, video_path)
-            print(f"✅ Video downloaded: {video_path}")
-        
-        # Download thumbnail
-        thumbnail_url = post.url
-        thumbnail_path = os.path.join(save_thumbnail_folder, f"{filename}.jpg")
-        download_file(thumbnail_url, thumbnail_path)
-        print(f"✅ Thumbnail downloaded: {thumbnail_path}")
-    
-    except Exception as e:
-        print(f"❌ Error processing {post_url}: {e}")
 
 def download_file(url, filepath):
     """Download a file from a URL and save it locally"""
@@ -44,17 +41,68 @@ def download_file(url, filepath):
     else:
         print(f"❌ Failed to download: {url}")
 
-def process_csv(csv_path, save_video_folder, save_thumbnail_folder):
-    with open(csv_path, newline='', encoding='utf-8') as file:
-        reader = csv.reader(file)
-        next(reader, None)  # Skip header if present
-        for row in reader:
-            if row:
-                download_instagram_post(row[0], save_video_folder, save_thumbnail_folder)
+def fetch_post_details(post_url, save_video_folder, save_thumbnail_folder):
+    """Fetch Instagram post details and download media."""
+    print(f"Fetching details for URL: {post_url}")
+    shortcode = post_url.split('/')[-2]
+    try:
+        post = Post.from_shortcode(L.context, shortcode)
+        caption = post.caption or ""
+        print(f"Original caption: {caption}")
+        short_caption = rewrite_caption(caption)
+        hashtags = extract_hashtags(caption)
+        print(f"Extracted hashtags: {hashtags}")
 
-if __name__ == "__main__":
-    csv_path = r"C:\Users\HP\Downloads\new finone\post link csv\feb_16_27.csv"
-    save_video_folder = r"C:\Users\HP\Downloads\new finone\files dowanloaded\feb 16-27\IG\videos"
-    save_thumbnail_folder = r"C:\Users\HP\Downloads\new finone\files dowanloaded\feb 16-27\IG\thumbnails"
-    
-    process_csv(csv_path, save_video_folder, save_thumbnail_folder)
+        # Create sanitized filename
+        filename = sanitize_filename(caption) or f"post_{shortcode}"
+
+        # Download video if available
+        if post.is_video:
+            video_url = post.video_url
+            video_path = os.path.join(save_video_folder, f"{filename}.mp4")
+            download_file(video_url, video_path)
+            print(f"✅ Video downloaded: {video_path}")
+
+        # Download thumbnail
+        thumbnail_url = post.url
+        thumbnail_path = os.path.join(save_thumbnail_folder, f"{filename}.jpg")
+        download_file(thumbnail_url, thumbnail_path)
+        print(f"✅ Thumbnail downloaded: {thumbnail_path}")
+
+        return caption, short_caption, hashtags
+    except Exception as e:
+        print(f"❌ Error fetching {post_url}: {e}")
+        return None, None, None
+
+# Load CSV with Instagram post links
+input_file = r"C:\Users\HP\Downloads\new finone\post link csv\feb_16_27.csv"
+df = pd.read_csv(input_file)
+
+# Add new columns for actual captions, shortened captions, and hashtags
+df['Actual Caption'] = ""
+df['Shortened Caption'] = ""
+df['Top 3 Hashtags'] = ""
+
+# Directories to save media files
+save_video_folder = r"C:\Users\HP\Downloads\new finone\files dowanloaded\feb 16-27\IG\videos\test"
+save_thumbnail_folder = r"C:\Users\HP\Downloads\new finone\files dowanloaded\feb 16-27\IG\thumbnails\test"
+output_folder = r"C:\Users\HP\Downloads\new finone\files dowanloaded\feb 16-27\IG"
+
+# Extract filename from input CSV and create output filename
+csv_filename = os.path.splitext(os.path.basename(input_file))[0]
+output_file = os.path.join(output_folder, f"{csv_filename}_output.xlsx")
+
+# Process each post
+for i, row in df.iterrows():
+    post_url = row['Post Link']
+    if pd.notna(post_url):
+        actual_caption, short_caption, hashtags = fetch_post_details(post_url, save_video_folder, save_thumbnail_folder)
+        if short_caption:
+            df.at[i, 'Actual Caption'] = actual_caption
+            df.at[i, 'Shortened Caption'] = short_caption
+            df.at[i, 'Top 3 Hashtags'] = hashtags
+
+# Save results to a new Excel file
+df.to_excel(output_file, index=False)
+
+print(f"✅ Process completed. Media files saved, and output in '{output_file}'")
